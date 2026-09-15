@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AlamaFlux — Owner Admin</title>
+<meta name="theme-color" content="#6B22ED">
+<style>
+:root{--a:#35A9F5;--b:#6B22ED;--grad:linear-gradient(135deg,#35A9F5,#6B22ED);--ink:#1e2430;--muted:#6b7280;--line:#e7e9f0;--soft:#f6f7fb;--green:#1B5E20;--red:#C62828;--orange:#E65100}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#eef0f6;color:var(--ink)}
+.top{background:var(--grad);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.top .brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:18px}
+.top .mark{width:34px;height:34px;background:rgba(255,255,255,.18);border-radius:9px;display:flex;align-items:center;justify-content:center}
+.top .who{font-size:12px;opacity:.9}
+.top button{background:rgba(255,255,255,.16);color:#fff;border:none;padding:7px 14px;border-radius:7px;font-weight:600;cursor:pointer;font-size:13px}
+.top button:hover{background:rgba(255,255,255,.28)}
+.wrap{max-width:1080px;margin:22px auto;padding:0 18px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
+.card .n{font-size:28px;font-weight:800;color:var(--b)}
+.card .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:20px}
+.panel h2{margin:0;padding:14px 18px;font-size:15px;background:var(--soft);border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;padding:10px 14px;background:#fafbff;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.on{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
+.off{background:#c9ced8}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.pill.active{background:#e6f7ed;color:var(--green)}
+.pill.suspended{background:#fdecea;color:var(--red)}
+.pill.owner{background:#efe7fd;color:var(--b)}
+.btn{border:none;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;margin:1px}
+.btn.s{background:#fff3e0;color:var(--orange)}
+.btn.a{background:#e6f7ed;color:var(--green)}
+.btn.k{background:#eef2ff;color:#3730a3}
+.btn.d{background:#fdecea;color:var(--red)}
+.btn:hover{filter:brightness(.95)}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+.err{background:#fdecea;color:var(--red);padding:10px 18px;font-size:13px;display:none}
+.hint{font-size:11px;color:var(--muted);padding:8px 18px}
+@media(max-width:720px){.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">
+    <div class="mark"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="12" width="4" height="9" rx="1" fill="#fff" opacity=".7"/><rect x="10" y="7" width="4" height="14" rx="1" fill="#fff" opacity=".85"/><rect x="17" y="3" width="4" height="18" rx="1" fill="#fff"/></svg></div>
+    AlamaFlux · Owner Admin
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span class="who" id="who"></span>
+    <button onclick="location.href='index.html'">← Back to App</button>
+  </div>
+</div>
+<div class="err" id="err"></div>
+<div class="wrap">
+  <div class="cards">
+    <div class="card"><div class="n" id="cTotal">–</div><div class="l">Total Accounts</div></div>
+    <div class="card"><div class="n" id="cOnline">–</div><div class="l">Online Now</div></div>
+    <div class="card"><div class="n" id="cActive">–</div><div class="l">Active</div></div>
+    <div class="card"><div class="n" id="cSusp">–</div><div class="l">Suspended</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>🟢 Live Sessions <span style="font-weight:400;color:#6b7280;font-size:12px">(updates in real time)</span></h2>
+    <div id="live"></div>
+  </div>
+
+  <div class="panel">
+    <h2>👥 All Accounts</h2>
+    <div id="users"></div>
+    <div class="hint">Suspend blocks login and instantly signs the user out. Force sign-out ends their current session. Delete removes the account permanently.</div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const TOKEN=localStorage.getItem('af_token');
+function hdr(){return{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN}}
+function showErr(m){const e=document.getElementById('err');e.textContent=m;e.style.display='block'}
+function ago(ts){if(!ts)return'–';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';return Math.floor(s/3600)+'h ago'}
+
+async function api(path,opts={}){
+  const res=await fetch(path,Object.assign({headers:hdr()},opts));
+  let d={};try{d=await res.json()}catch(e){}
+  if(!res.ok)throw new Error(d.error||('Error '+res.status));
+  return d;
+}
+
+let me=null;
+async function guard(){
+  if(!TOKEN){location.href='index.html';return false}
+  try{const d=await api('/api/me');me=d.user;
+    if(me.role!=='owner'){document.body.innerHTML='<p style="padding:40px;text-align:center;font-family:sans-serif">Owner access only. <a href="index.html">Return to app</a></p>';return false}
+    document.getElementById('who').textContent=me.email;
+    return true;
+  }catch(e){location.href='index.html';return false}
+}
+
+let lastUsers=[];
+function renderUsers(users){
+  lastUsers=users;
+  const online=users.filter(u=>u.online).length;
+  const active=users.filter(u=>u.status==='active').length;
+  const susp=users.filter(u=>u.status==='suspended').length;
+  document.getElementById('cTotal').textContent=users.length;
+  document.getElementById('cOnline').textContent=online;
+  document.getElementById('cActive').textContent=active;
+  document.getElementById('cSusp').textContent=susp;
+
+  const wrap=document.getElementById('users');
+  wrap.innerHTML='';
+  if(!users.length){wrap.innerHTML='<div class="empty">No accounts yet.</div>';return}
+  const tbl=document.createElement('table');
+  const thead=document.createElement('thead');
+  thead.innerHTML='<tr><th>Status</th><th>Name</th><th>Email</th><th>School</th><th>Role</th><th>State</th><th>Actions</th></tr>';
+  tbl.appendChild(thead);
+  const tb=document.createElement('tbody');
+  users.forEach(u=>{
+    const tr=document.createElement('tr');
+    const cell=(fn)=>{const td=document.createElement('td');fn(td);tr.appendChild(td)};
+    cell(td=>{const d=document.createElement('span');d.className='dot '+(u.online?'on':'off');td.appendChild(d);td.appendChild(document.createTextNode(u.online?'Online':'Offline'))});
+    cell(td=>td.textContent=u.name||'–');
+    cell(td=>td.textContent=u.email);
+    cell(td=>td.textContent=u.school||'–');
+    cell(td=>{const p=document.createElement('span');p.className='pill '+(u.role==='owner'?'owner':'');p.textContent=u.role;td.appendChild(p)});
+    cell(td=>{const p=document.createElement('span');p.className='pill '+u.status;p.textContent=u.status;td.appendChild(p)});
+    cell(td=>{
+      if(u.role==='owner'){td.textContent='—';return}
+      if(u.status==='active'){
+        const b=document.createElement('button');b.className='btn s';b.textContent='Suspend';b.onclick=()=>act('suspend',u);td.appendChild(b);
+      }else{
+        const b=document.createElement('button');b.className='btn a';b.textContent='Activate';b.onclick=()=>act('activate',u);td.appendChild(b);
+      }
+      if(u.online){const k=document.createElement('button');k.className='btn k';k.textContent='Force sign-out';k.onclick=()=>act('logout',u);td.appendChild(k)}
+      const del=document.createElement('button');del.className='btn d';del.textContent='Delete';del.onclick=()=>act('delete',u);td.appendChild(del);
+    });
+    tb.appendChild(tr);
+  });
+  tbl.appendChild(tb);
+  wrap.appendChild(tbl);
+}
+
+async function act(kind,u){
+  const labels={suspend:'suspend',activate:'activate',logout:'force sign-out',delete:'permanently delete'};
+  if(kind==='delete'&&!confirm('Permanently delete the account for '+u.email+'? This cannot be undone.'))return;
+  if(kind==='suspend'&&!confirm('Suspend '+u.email+'? They will be signed out immediately and cannot log in until reactivated.'))return;
+  let reason='';
+  if(kind==='suspend'){
+    reason=prompt('Optional: add a reason for the suspension. This will be included in the email sent to the teacher. Leave blank to send the default message.','')||'';
+  }
+  try{
+    if(kind==='delete'){await api('/api/admin/users/'+u.id,{method:'DELETE'});}
+    else if(kind==='suspend'){await api('/api/admin/users/'+u.id+'/suspend',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),body:JSON.stringify({reason:reason})});}
+    else{await api('/api/admin/users/'+u.id+'/'+kind,{method:'POST'});}
+    await loadUsers();
+  }catch(e){showErr(e.message)}
+}
+
+async function loadUsers(){try{const d=await api('/api/admin/users');renderUsers(d.users)}catch(e){showErr(e.message)}}
+
+function renderLive(sessions){
+  const wrap=document.getElementById('live');
+  wrap.innerHTML='';
+  if(!sessions||!sessions.length){wrap.innerHTML='<div class="empty">No teachers are online right now.</div>';document.getElementById('cOnline').textContent='0';return}
+  document.getElementById('cOnline').textContent=sessions.length;
+  const tbl=document.createElement('table');
+  tbl.innerHTML='<thead><tr><th>Teacher</th><th>Email</th><th>Working On</th><th>Devices</th><th>Last Active</th></tr></thead>';
+  const tb=document.createElement('tbody');
+  sessions.forEach(s=>{
+    const tr=document.createElement('tr');
+    const add=(txt)=>{const td=document.createElement('td');td.textContent=txt;tr.appendChild(td)};
+    add(s.name||'–');add(s.email||'–');add(s.grade?('Grade '+s.grade):'–');add(String(s.sockets));add(ago(s.lastActive));
+    tb.appendChild(tr);
+  });
+  tbl.appendChild(tb);wrap.appendChild(tbl);
+  // reflect online dots in the users table without a full reload
+  if(lastUsers.length){const on=new Set(sessions.map(s=>s.id));lastUsers.forEach(u=>u.online=on.has(u.id));renderUsers(lastUsers)}
+}
+
+(async function(){
+  if(!(await guard()))return;
+  await loadUsers();
+  const socket=io({auth:{token:TOKEN}});
+  socket.on('presence',renderLive);
+  socket.on('connect_error',()=>showErr('Live connection failed — session list may be stale.'));
+  // periodic full refresh to catch account changes
+  setInterval(loadUsers,20000);
+})();
+</script>
+</body>
+</html>
