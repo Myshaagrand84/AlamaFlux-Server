@@ -283,24 +283,18 @@ td.pl-2,td.pl-1{color:var(--red)}
   .topbar .exam-info{gap:4px}.topbar .exam-info input{width:60px}
 }
 
-/* ===== ACTIVE CELL HIGHLIGHT FIX ===== */
+/* ===== ACTIVE CELL HIGHLIGHT FIX (v2) ===== */
 .entry-table td.raw-input:focus-within {
-  border: 2px solid #35A9F5 !important;
-  border-radius: 3px;
-  background: #D6EDFF !important;
-  box-shadow: 0 0 0 3px rgba(53, 169, 245, 0.30);
+  outline: 3px solid #35A9F5;
+  outline-offset: -3px;
+  background: #CCDDFF !important;
 }
 
 .entry-table td.fro-name:focus-within,
 .entry-table td.fro-adm:focus-within {
-  border: 2px solid #35A9F5 !important;
-  border-radius: 3px;
-  background: #D6EDFF !important;
-  box-shadow: 0 0 0 3px rgba(53, 169, 245, 0.30);
-}
-
-.entry-table tr:has(td.raw-input:focus-within) {
-  background: rgba(53, 169, 245, 0.06);
+  outline: 3px solid #35A9F5;
+  outline-offset: -3px;
+  background: #CCDDFF !important;
 }
 
 .entry-table td.raw-input input:focus,
