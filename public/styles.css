@@ -282,3 +282,29 @@ td.pl-2,td.pl-1{color:var(--red)}
   .sidebar{width:42px}.sidebar .grade-btn{padding:6px 4px;font-size:9px;text-align:center}.sidebar .side-label,.sidebar .pay-status{display:none}
   .topbar .exam-info{gap:4px}.topbar .exam-info input{width:60px}
 }
+
+/* ===== ACTIVE CELL HIGHLIGHT FIX ===== */
+.entry-table td.raw-input:focus-within {
+  border: 2px solid #35A9F5 !important;
+  border-radius: 3px;
+  background: #D6EDFF !important;
+  box-shadow: 0 0 0 3px rgba(53, 169, 245, 0.30);
+}
+
+.entry-table td.fro-name:focus-within,
+.entry-table td.fro-adm:focus-within {
+  border: 2px solid #35A9F5 !important;
+  border-radius: 3px;
+  background: #D6EDFF !important;
+  box-shadow: 0 0 0 3px rgba(53, 169, 245, 0.30);
+}
+
+.entry-table tr:has(td.raw-input:focus-within) {
+  background: rgba(53, 169, 245, 0.06);
+}
+
+.entry-table td.raw-input input:focus,
+.entry-table td.fro-name input:focus,
+.entry-table td.fro-adm input:focus {
+  outline: none;
+}
