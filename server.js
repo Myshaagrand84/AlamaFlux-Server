@@ -1,29 +1,32 @@
 /*
-* AlamaFlux backend server — PATCHED for PostgreSQL persistence
-* -----------------------------------------------------------
-* Changes from original:
-*   1. db.load() moved inside async init()
-*   2. seedOwner() moved inside async init() (after DB is ready)
-*   3. server.listen() moved inside async init()
-*   4. Added 'pg' dependency requirement
-*
-* Everything else is IDENTICAL to the original server.js
-* -----------------------------------------------------------
-*/
-
+ * AlamaFlux backend server
+ * -----------------------------------------------------------
+ * - Central teacher accounts (register / login) with bcrypt.
+ * - Owner-only admin API: list users, suspend, activate, delete,
+ *   and force-logout (token revocation + live socket kick).
+ * - Live session monitoring via Socket.IO presence.
+ * - Serves the AlamaFlux PWA frontend from ./public.
+ *
+ * SECURITY: run this behind HTTPS in production. Set JWT_SECRET,
+ * OWNER_EMAIL and OWNER_PASSWORD via environment variables.
+ */
 const path = require('path');
+// Load settings from a local .env file (if present) before anything reads
+// process.env. Real environment variables always take precedence.
 require('./lib/loadenv')();
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 const db = require('./lib/db');
 const email = require('./lib/email');
 
-// Fire-and-forget email helper
+// Fire-and-forget email helper: never let email failures break the API.
 function notify(templateName, user, extra) {
   try {
     Promise.resolve(email.sendTemplate(templateName, user, extra))
@@ -43,6 +46,9 @@ const OWNER_PASSWORD = process.env.OWNER_PASSWORD || 'changeme123';
 if (!process.env.JWT_SECRET) {
   console.warn('[warn] JWT_SECRET not set — using a random secret. Sessions reset on restart. Set JWT_SECRET in production.');
 }
+
+// Data is loaded asynchronously in init() below (so the PostgreSQL backend can
+// connect before the server starts accepting requests).
 
 // ---------- Seed owner account ----------
 function seedOwner() {
@@ -64,25 +70,31 @@ function seedOwner() {
   });
   console.log(`[seed] Owner account created: ${OWNER_EMAIL}`);
   if (!process.env.OWNER_PASSWORD) {
-    console.warn(`[warn] Owner password defaults to "${OWNER_PASSWORD}". Change it via OWNER_PASSWORD env.`);
+    console.warn(`[warn] Owner password defaults to "${OWNER_PASSWORD}". Change it via OWNER_PASSWORD env and delete data/data.json to re-seed, OR change it from the app profile.`);
   }
 }
+// seedOwner() runs inside init() after the datastore has loaded.
 
 // ---------- Presence (in-memory) ----------
+// userId -> { sockets:Set<socketId>, lastActive:number, grade:number|null, name, email }
 const presence = new Map();
 
 function presenceSnapshot() {
   const list = [];
   for (const [uid, p] of presence.entries()) {
     list.push({
-      id: uid, name: p.name, email: p.email,
-      grade: p.grade, lastActive: p.lastActive, sockets: p.sockets.size,
+      id: uid,
+      name: p.name,
+      email: p.email,
+      grade: p.grade,
+      lastActive: p.lastActive,
+      sockets: p.sockets.size,
     });
   }
   return list;
 }
 
-let io;
+let io; // set after http server is created
 function broadcastPresence() {
   if (io) io.to('admins').emit('presence', presenceSnapshot());
 }
@@ -90,9 +102,15 @@ function broadcastPresence() {
 // ---------- Helpers ----------
 function publicUser(u) {
   return {
-    id: u.id, name: u.name, email: u.email, phone: u.phone,
-    school: u.school, role: u.role, status: u.status,
-    createdAt: u.createdAt, lastLoginAt: u.lastLoginAt || null,
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    phone: u.phone,
+    school: u.school,
+    role: u.role,
+    status: u.status,
+    createdAt: u.createdAt,
+    lastLoginAt: u.lastLoginAt || null,
   };
 }
 
@@ -106,16 +124,56 @@ function verifyToken(token) {
     const u = db.findById(payload.uid);
     if (!u) return null;
     if (u.status !== 'active') return null;
-    if ((u.tokenVersion || 1) !== payload.ver) return null;
+    if ((u.tokenVersion || 1) !== payload.ver) return null; // revoked / forced-logout
     return u;
-  } catch (e) { return null; }
+  } catch (e) {
+    return null;
+  }
 }
 
 // ---------- App ----------
 const app = express();
-app.use(cors());
-app.use(express.json());
 
+// Behind a host's HTTPS load balancer (Render/Railway/Nginx), trust the proxy
+// so secure cookies, client IPs, and rate-limiting work correctly.
+app.set('trust proxy', 1);
+
+// Security response headers. contentSecurityPolicy is disabled because the
+// frontend uses inline styles/scripts; everything is same-origin anyway.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+
+// CORS: the frontend is served by THIS same server, so same-origin requests
+// need no special CORS. If you host the frontend on a different domain, list
+// it in CORS_ORIGIN (comma-separated) to allow it.
+const corsOrigins = (process.env.CORS_ORIGIN || '').split(',').map((s) => s.trim()).filter(Boolean);
+if (corsOrigins.length) {
+  app.use(cors({ origin: corsOrigins, credentials: true }));
+} else {
+  app.use(cors()); // same-origin usage; permissive but fine when UI is served here
+}
+
+app.use(express.json({ limit: '256kb' }));
+
+// Rate limiters to blunt brute-force / abuse once the app is public.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 20,                  // 20 login attempts per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
+});
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,                  // 10 new sign-ups per IP per hour
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sign-ups from this network. Please try again later.' },
+});
+
+// Simple health check for hosting platforms.
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+// Auth middleware
 function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
@@ -124,7 +182,6 @@ function auth(req, res, next) {
   req.user = u;
   next();
 }
-
 function ownerOnly(req, res, next) {
   if (req.user.role !== 'owner') return res.status(403).json({ error: 'Owner access required.' });
   next();
@@ -135,25 +192,29 @@ function genId() {
 }
 
 // ---------- Auth routes ----------
-app.post('/api/register', (req, res) => {
+app.post('/api/register', registerLimiter, (req, res) => {
   const { name, email, phone, school, password } = req.body || {};
   if (!name || !email || !email.includes('@')) return res.status(400).json({ error: 'Valid name and email required.' });
   if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   if (db.findByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists.' });
-
-  const hash = bcrypt.hashSync(password, 10);
-  const user = {
-    id: genId(), name: name.trim(), email: email.toLowerCase().trim(),
-    phone: (phone || '').trim(), school: (school || '').trim(),
-    passwordHash: hash, role: 'teacher', status: 'active',
-    tokenVersion: 1, createdAt: new Date().toISOString(), lastLoginAt: null,
+  const u = {
+    id: genId(),
+    name: String(name).trim(),
+    email: String(email).toLowerCase().trim(),
+    phone: phone || '',
+    school: school || '',
+    passwordHash: bcrypt.hashSync(password, 10),
+    role: 'teacher',
+    status: 'active',
+    tokenVersion: 1,
+    createdAt: new Date().toISOString(),
+    lastLoginAt: null,
   };
-  db.addUser(user);
-  notify('welcome', user);
-  res.status(201).json({ token: signToken(user), user: publicUser(user) });
+  db.addUser(u);
+  res.status(201).json({ ok: true });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginLimiter, (req, res) => {
   const { email, password } = req.body || {};
   const u = db.findByEmail(email || '');
   if (!u || !bcrypt.compareSync(password || '', u.passwordHash)) {
@@ -174,6 +235,7 @@ app.post('/api/logout', auth, (req, res) => {
   res.status(204).end();
 });
 
+// Update own profile
 app.put('/api/me', auth, (req, res) => {
   const { name, phone, school, currentPassword, newPassword } = req.body || {};
   const patch = {};
@@ -186,16 +248,39 @@ app.put('/api/me', auth, (req, res) => {
     }
     if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
     patch.passwordHash = bcrypt.hashSync(newPassword, 10);
-    patch.tokenVersion = (req.user.tokenVersion || 1) + 1;
   }
   const u = db.updateUser(req.user.id, patch);
   res.json({ user: publicUser(u) });
 });
 
-app.put('/api/me/school', auth, (req, res) => {
+// Quick school-name update (used by the top-bar field)
+app.patch('/api/me/school', auth, (req, res) => {
   const school = (req.body && typeof req.body.school === 'string') ? req.body.school : '';
   const u = db.updateUser(req.user.id, { school });
   res.json({ user: publicUser(u) });
+});
+
+// ---------- User state sync (grades / marks across devices) ----------
+// GET /api/me/state  — load the user's grading data from the server
+app.get('/api/me/state', auth, (req, res) => {
+  const u = db.findById(req.user.id);
+  if (!u) return res.status(404).json({ error: 'User not found.' });
+  res.json({ state: u.appState || null, savedAt: u.appStateSavedAt || null });
+});
+
+// PUT /api/me/state  — save the user's grading data to the server
+app.put('/api/me/state', auth, (req, res) => {
+  if (!req.body || typeof req.body.state === 'undefined') {
+    return res.status(400).json({ error: 'Missing state data.' });
+  }
+  // Limit payload size (the state object with 9 grades × 45 learners × ~9 subjects)
+  const json = JSON.stringify(req.body.state);
+  if (json.length > 500000) {
+    return res.status(413).json({ error: 'State data too large (max ~500 KB).' });
+  }
+  const now = new Date().toISOString();
+  db.updateUser(req.user.id, { appState: req.body.state, appStateSavedAt: now });
+  res.json({ ok: true, savedAt: now });
 });
 
 // ---------- Admin routes (owner only) ----------
@@ -266,7 +351,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------- HTTP + Socket.IO ----------
 const server = http.createServer(app);
-io = new Server(server, { cors: { origin: '*' } });
+io = new Server(server, { cors: { origin: corsOrigins.length ? corsOrigins : '*' } });
 
 io.use((socket, next) => {
   const token = socket.handshake.auth && socket.handshake.auth.token;
@@ -281,7 +366,7 @@ io.on('connection', (socket) => {
   if (u.role === 'owner') {
     socket.join('admins');
     socket.emit('presence', presenceSnapshot());
-    return;
+    return; // owner is a monitor, not tracked as a teaching session
   }
   let p = presence.get(u.id);
   if (!p) {
@@ -305,29 +390,26 @@ io.on('connection', (socket) => {
   });
 });
 
-// ========== ASYNC STARTUP — connect to PostgreSQL FIRST ==========
-async function start() {
-  // 1. Initialize database (PostgreSQL if available, else JSON file)
-  await db.init();
-
-  // 2. Load data (for JSON path; PG path already loaded in init)
-  db.load();
-
-  // 3. Seed the owner account
+async function init() {
+  try {
+    await db.load();
+  } catch (e) {
+    console.error('[fatal] Could not load the datastore:', e.message);
+    process.exit(1);
+  }
   seedOwner();
-
-  // 4. Start listening — bind to 0.0.0.0 so Render can reach us
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`AlamaFlux server running on http://0.0.0.0:${PORT}`);
     console.log(`Owner login: ${OWNER_EMAIL}`);
+    if (!process.env.JWT_SECRET) {
+      console.warn('[warn] JWT_SECRET not set — set it in production so logins survive restarts.');
+    }
+    if (!process.env.DATABASE_URL && !process.env.DATA_DIR) {
+      console.log('[info] Using local JSON storage in ./data. On a cloud host, set DATABASE_URL (PostgreSQL) or point DATA_DIR at a persistent disk so data is not lost on redeploy.');
+    }
   });
 }
+init();
 
-start().catch((err) => {
-  console.error('[fatal] Server failed to start:', err);
-  process.exit(1);
-});
-
-// ---------- Graceful shutdown ----------
 process.on('SIGINT', () => { db.persistSync(); process.exit(0); });
 process.on('SIGTERM', () => { db.persistSync(); process.exit(0); });
