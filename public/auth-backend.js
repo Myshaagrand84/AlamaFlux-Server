@@ -198,7 +198,7 @@
       errBox.style.display = 'none';
       showAuth('login');
       const s = document.getElementById('loginSuccessBox');
-      s.textContent = 'Account created! Please sign in.';
+      s.textContent = '\u2705 Account created! It is now awaiting approval by the administrator. You will be able to sign in once your account has been approved.';
       s.style.display = 'block';
       document.getElementById('loginEmail').value = email;
     } catch (e) { showErr(e.message); }

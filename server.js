@@ -39,7 +39,7 @@ function notify(templateName, user, extra) {
 // ---------- Config ----------
 const PORT = process.env.PORT || 8000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const TOKEN_TTL = process.env.TOKEN_TTL || '12h';
+const TOKEN_TTL = process.env.TOKEN_TTL || '7d';
 const OWNER_EMAIL = (process.env.OWNER_EMAIL || 'owner@alamaflux.local').toLowerCase();
 const OWNER_PASSWORD = process.env.OWNER_PASSWORD || 'changeme123';
 
@@ -205,13 +205,17 @@ app.post('/api/register', registerLimiter, (req, res) => {
     school: school || '',
     passwordHash: bcrypt.hashSync(password, 10),
     role: 'teacher',
-    status: 'active',
+    // New accounts start as 'pending' — the owner must approve them in the
+    // admin panel before they can log in. This prevents unknown sign-ups.
+    status: 'pending',
     tokenVersion: 1,
     createdAt: new Date().toISOString(),
     lastLoginAt: null,
   };
   db.addUser(u);
-  res.status(201).json({ ok: true });
+  // Notify the owner that a new account is awaiting approval (best-effort).
+  try { notify('pending', u, {}); } catch (e) {}
+  res.status(201).json({ ok: true, status: 'pending' });
 });
 
 app.post('/api/login', loginLimiter, (req, res) => {
@@ -219,6 +223,9 @@ app.post('/api/login', loginLimiter, (req, res) => {
   const u = db.findByEmail(email || '');
   if (!u || !bcrypt.compareSync(password || '', u.passwordHash)) {
     return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
+  if (u.status === 'pending') {
+    return res.status(403).json({ error: 'Your account is awaiting approval by the administrator. You will be able to sign in once it is approved.' });
   }
   if (u.status !== 'active') {
     return res.status(403).json({ error: 'This account has been suspended. Contact the administrator.' });

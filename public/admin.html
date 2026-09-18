@@ -32,10 +32,12 @@ tr:last-child td{border-bottom:none}
 .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
 .pill.active{background:#e6f7ed;color:var(--green)}
 .pill.suspended{background:#fdecea;color:var(--red)}
+.pill.pending{background:#fff8e1;color:#8a6d00}
 .pill.owner{background:#efe7fd;color:var(--b)}
 .btn{border:none;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;margin:1px}
 .btn.s{background:#fff3e0;color:var(--orange)}
 .btn.a{background:#e6f7ed;color:var(--green)}
+.btn.ap{background:#ede9fe;color:var(--b)}
 .btn.k{background:#eef2ff;color:#3730a3}
 .btn.d{background:#fdecea;color:var(--red)}
 .btn:hover{filter:brightness(.95)}
@@ -62,6 +64,7 @@ tr:last-child td{border-bottom:none}
     <div class="card"><div class="n" id="cTotal">–</div><div class="l">Total Accounts</div></div>
     <div class="card"><div class="n" id="cOnline">–</div><div class="l">Online Now</div></div>
     <div class="card"><div class="n" id="cActive">–</div><div class="l">Active</div></div>
+    <div class="card"><div class="n" id="cPending" style="color:#8a6d00">–</div><div class="l">Awaiting Approval</div></div>
     <div class="card"><div class="n" id="cSusp">–</div><div class="l">Suspended</div></div>
   </div>
 
@@ -73,7 +76,7 @@ tr:last-child td{border-bottom:none}
   <div class="panel">
     <h2>👥 All Accounts</h2>
     <div id="users"></div>
-    <div class="hint">Suspend blocks login and instantly signs the user out. Force sign-out ends their current session. Delete removes the account permanently.</div>
+    <div class="hint">New sign-ups start as <strong>Pending</strong> and cannot log in until you click <strong>Approve</strong>. Suspend blocks login and instantly signs the user out. Force sign-out ends their current session. Delete removes the account permanently.</div>
   </div>
 </div>
 
@@ -106,10 +109,12 @@ function renderUsers(users){
   lastUsers=users;
   const online=users.filter(u=>u.online).length;
   const active=users.filter(u=>u.status==='active').length;
+  const pending=users.filter(u=>u.status==='pending').length;
   const susp=users.filter(u=>u.status==='suspended').length;
   document.getElementById('cTotal').textContent=users.length;
   document.getElementById('cOnline').textContent=online;
   document.getElementById('cActive').textContent=active;
+  const cp=document.getElementById('cPending');if(cp)cp.textContent=pending;
   document.getElementById('cSusp').textContent=susp;
 
   const wrap=document.getElementById('users');
@@ -131,7 +136,10 @@ function renderUsers(users){
     cell(td=>{const p=document.createElement('span');p.className='pill '+u.status;p.textContent=u.status;td.appendChild(p)});
     cell(td=>{
       if(u.role==='owner'){td.textContent='—';return}
-      if(u.status==='active'){
+      if(u.status==='pending'){
+        const b=document.createElement('button');b.className='btn ap';b.textContent='✓ Approve';b.onclick=()=>act('activate',u);td.appendChild(b);
+        const r=document.createElement('button');r.className='btn d';r.textContent='Reject';r.onclick=()=>act('delete',u);td.appendChild(r);
+      }else if(u.status==='active'){
         const b=document.createElement('button');b.className='btn s';b.textContent='Suspend';b.onclick=()=>act('suspend',u);td.appendChild(b);
       }else{
         const b=document.createElement('button');b.className='btn a';b.textContent='Activate';b.onclick=()=>act('activate',u);td.appendChild(b);
