@@ -8,6 +8,7 @@
  * so teachers see the same data across devices.
  */
 (function () {
+  window.__ALAMAFLUX_BACKEND = true;
   const API = ''; // same origin
   const TOKEN_KEY = 'af_token';
 
@@ -33,12 +34,20 @@
       wakingEl.style.display = 'none';
       let data = null;
       try { data = await res.json(); } catch (e) { data = {}; }
-      if (!res.ok) throw new Error((data && data.error) || ('Request failed (' + res.status + ')'));
+      if (!res.ok) {
+        var httpErr = new Error((data && data.error) || ('Request failed (' + res.status + ')'));
+        httpErr.status = res.status;   // real HTTP status (e.g. 401 = bad/expired token)
+        throw httpErr;
+      }
       return data;
     } catch (e) {
       wakingEl.style.display = 'none';
-      if (e.message === 'Failed to fetch' || (e.name === 'TypeError' && e.message.indexOf('Failed to fetch') === 0)) {
-        throw new Error('Server is waking up. Please wait a moment and try again.');
+      // A thrown fetch TypeError means the network/server is unreachable
+      // (Render cold-start), NOT an authentication failure.
+      if (e.name === 'TypeError' || (e.message && e.message.indexOf('Failed to fetch') === 0)) {
+        var netErr = new Error('Server is waking up. Please wait a moment and try again.');
+        netErr.isNetwork = true;       // flag so callers keep the session
+        throw netErr;
       }
       throw e;
     }
@@ -267,7 +276,13 @@
   };
 
   // ---------- Boot (async session restore) ----------
-  window.__bootApp = async function () {
+  // IMPORTANT: We must NOT delete the saved token just because the server is
+  // slow to respond (Render free-tier cold start can take 30-50s). Deleting
+  // the token on a transient network error is what logged teachers out every
+  // time the instance had spun down. We only clear the session on a genuine
+  // auth failure (HTTP 401), and retry on network errors instead.
+  window.__bootApp = async function (attempt) {
+    attempt = attempt || 0;
     const t = getToken();
     if (!t) { showAuth('login'); return; }
     try {
@@ -279,6 +294,23 @@
       injectAdminLink();
       connectSocket();
     } catch (e) {
+      if (e && e.isNetwork) {
+        // Server waking up / offline: KEEP the token and retry with backoff.
+        if (attempt < 6) {
+          setTimeout(function () { window.__bootApp(attempt + 1); }, 5000);
+          return;
+        }
+        // Still unreachable after retries: keep the token, tell the user,
+        // and let them retry manually. Do NOT log them out.
+        showAuth('login');
+        var sb = document.getElementById('loginSuccessBox');
+        if (sb) {
+          sb.style.display = 'block';
+          sb.textContent = 'Could not reach the server. Your login is saved \u2014 please refresh in a moment.';
+        }
+        return;
+      }
+      // Genuine auth failure (401) or other error: token is bad/expired.
       setToken(null);
       showAuth('login');
     }
