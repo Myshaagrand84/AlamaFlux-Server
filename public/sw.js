@@ -1,5 +1,5 @@
 /* AlamaFlux service worker — offline caching for app-like use */
-const CACHE = 'alamaflux-v1';
+const CACHE = 'alamaflux-v2';
 
 /* Core files that make up the app shell. */
 const CORE_ASSETS = [
@@ -54,18 +54,21 @@ self.addEventListener('fetch', (event) => {
     return; // let the browser handle it normally
   }
 
-  // Same-origin app files: cache-first (fast, works offline).
+  // Same-origin app files: network-first (always fetch the freshest version,
+  // fall back to cache only when offline). This means users automatically get
+  // the latest app after each deploy — no more CTRL+SHIFT+R hard refresh.
   if (url.origin === self.location.origin) {
     event.respondWith((async () => {
-      const cached = await caches.match(req);
-      if (cached) return cached;
       try {
         const res = await fetch(req);
-        const cache = await caches.open(CACHE);
-        cache.put(req, res.clone());
+        if (res && res.ok) {
+          const cache = await caches.open(CACHE);
+          cache.put(req, res.clone());
+        }
         return res;
       } catch (e) {
-        return caches.match('./index.html');
+        const cached = await caches.match(req);
+        return cached || caches.match('./index.html');
       }
     })());
     return;

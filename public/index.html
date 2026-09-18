@@ -240,9 +240,20 @@
 /* Register the service worker for offline, app-like installation. */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('sw.js').catch(function (err) {
+    navigator.serviceWorker.register('sw.js').then(function (reg) {
+      // Check for an updated service worker on every load.
+      reg.update();
+    }).catch(function (err) {
       console.warn('AlamaFlux service worker registration failed:', err);
     });
+  });
+  // When a new service worker takes control (after a deploy), reload once
+  // automatically so the user always sees the latest app — no manual hard refresh.
+  var _swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (_swReloaded) return;
+    _swReloaded = true;
+    window.location.reload();
   });
 }
 </script>

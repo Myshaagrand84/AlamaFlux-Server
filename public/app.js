@@ -216,6 +216,10 @@ function buildSidebar(){
   h+='<div class="sep"></div><div class="side-label">Junior School</div>';
   [7,8,9].forEach(g=>{h+=`<button class="grade-btn${g===currentGrade?' active':''}" onclick="switchGrade(${g})">Grade ${g}</button>`});
 
+  // Zonal bundle export (all grades 1-9 in one Excel workbook)
+  h+='<div class="sep"></div>';
+  h+=`<button class="grade-btn bundle-btn" onclick="exportZonalBundle()" title="Export Grades 1-9 score sheets as one Excel workbook for the zonal office" style="background:#C2185B;color:#fff;font-weight:800;border:none">\uD83D\uDCE6 Zonal Bundle</button>`;
+
   // Payment status per grade
   h+='<div class="pay-status"><div class="ps-label">Report Access</div>';
   if(isGradePaid(currentGrade)){h+=`<span class="ps-badge paid">✅ Paid — Unlocked</span>`}
@@ -371,10 +375,19 @@ function computeMSS(computedAll){
 
 function computePositions(computedAll){
   const gd=state.grades[currentGrade];
-  return gd.learners.map((lr,i)=>({i,avg:computedAll[i].avgPct,name:lr.name,adm:lr.adm}))
+  const sorted=gd.learners.map((lr,i)=>({i,avg:computedAll[i].avgPct,name:lr.name,adm:lr.adm}))
     .filter(x=>x.name&&x.avg!==null)
-    .sort((a,b)=>b.avg-a.avg)
-    .map((x,idx,arr)=>({...x,pos:idx>0&&arr[idx-1].avg===x.avg?arr[idx-1].pos:idx+1}));
+    .sort((a,b)=>b.avg-a.avg);
+  // Assign positions iteratively so ties correctly share the previous position.
+  // (The old one-liner read arr[idx-1].pos before it existed, giving "undefined".)
+  const ranked=[];
+  sorted.forEach((x,idx)=>{
+    let pos;
+    if(idx>0 && ranked[idx-1].avg===x.avg){ pos=ranked[idx-1].pos; }
+    else { pos=idx+1; }
+    ranked.push(Object.assign({},x,{pos}));
+  });
+  return ranked;
 }
 
 // ========== INPUT HANDLERS ==========
@@ -428,8 +441,17 @@ function navKey(e,i,si,el){
   }
   if(e.key==='ArrowDown'){e.preventDefault();window._pendingFocus={i:i+1,si};el.blur();return}
   if(e.key==='ArrowUp'){e.preventDefault();window._pendingFocus={i:i-1,si};el.blur();return}
-  if(e.key==='ArrowRight'&&e.ctrlKey){e.preventDefault();window._pendingFocus={i,si:si+1};el.blur();return}
-  if(e.key==='ArrowLeft'&&e.ctrlKey){e.preventDefault();window._pendingFocus={i,si:si-1};el.blur();return}
+  // Plain Left/Right arrows move between subject columns Excel-style, but only
+  // when the text caret is already at the edge of the cell (so arrows can still
+  // move within a typed number). Ctrl+Arrow always jumps regardless of caret.
+  if(e.key==='ArrowRight'){
+    const atEnd=(el.selectionStart===el.value.length && el.selectionStart===el.selectionEnd);
+    if(e.ctrlKey||atEnd){e.preventDefault();window._pendingFocus={i,si:si+1};el.blur();return}
+  }
+  if(e.key==='ArrowLeft'){
+    const atStart=(el.selectionStart===0 && el.selectionStart===el.selectionEnd);
+    if(e.ctrlKey||atStart){e.preventDefault();window._pendingFocus={i,si:si-1};el.blur();return}
+  }
 }
 function focusCell(i,si){
   const el=document.querySelector(`input[data-lr="${i}"][data-sb="${si}"]`);
@@ -907,6 +929,65 @@ function exportScoresheetExcel(){
   toast('✅ Excel exported!');
 }
 
+// ========== ZONAL BUNDLE (Grades 1-9 in one workbook) ==========
+function buildGradeAOA(g){
+  // Build the score-sheet rows for ONE grade without disturbing the UI.
+  const prevGrade=currentGrade;
+  currentGrade=g;
+  const cfg=GRADE_CFG.find(c=>c.g===g);
+  const gd=state.grades[g];
+  const computed=computeAll();
+  const positions=computePositions(computed);
+  currentGrade=prevGrade; // restore immediately
+
+  const schoolName=(currentUser&&currentUser.school)?currentUser.school:'My School';
+  const aoa=[];
+  // Title rows — school name + the word ZONAL appear on every tab.
+  aoa.push([schoolName+' — ZONAL SCORE SHEET']);
+  aoa.push(['Grade '+g,(state.examName||'Exam'),'Term '+(state.examTerm||''),(state.examYear||'')]);
+  aoa.push([]);
+  // Column header row
+  const hdr=['Pos','ADM','Learner'];
+  cfg.subjects.forEach(s=>hdr.push(s.n+' (P/L)'));
+  hdr.push('AVG P/L','AVG %','Grade','Pts');
+  aoa.push(hdr);
+  // Data rows
+  positions.forEach(x=>{
+    const lr=gd.learners[x.i];
+    const row=[x.pos,lr.adm,lr.name];
+    cfg.subjects.forEach((s,si)=>{const raw=lr.raws[si];const pl=computed[x.i].pls[si];row.push(raw==='ABS'?'ABS':(pl!==null?pl:''))});
+    row.push(computed[x.i].avgPL||'',x.avg||'',computed[x.i].avgGrade||'',computed[x.i].totalPts||'');
+    aoa.push(row);
+  });
+  return {aoa,nSubj:cfg.subjects.length,rows:positions.length};
+}
+
+function exportZonalBundle(){
+  if(typeof XLSX==='undefined'){toast('❌ Excel library not loaded. Check your connection and retry.');return}
+  const schoolName=(currentUser&&currentUser.school)?currentUser.school:'';
+  if(!schoolName){
+    if(!confirm('Your school name is empty. The bundle header will just say "My School". Continue anyway?'))return;
+  }
+  // Make sure the latest typed marks are captured before exporting.
+  try{saveUserState();}catch(e){}
+  const wb=XLSX.utils.book_new();
+  let totalLearners=0;
+  for(let g=1;g<=9;g++){
+    const {aoa,nSubj,rows}=buildGradeAOA(g);
+    totalLearners+=rows;
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    // Column widths
+    const wch=[{wch:5},{wch:10},{wch:22}];
+    for(let k=0;k<nSubj;k++)wch.push({wch:10});
+    wch.push({wch:8},{wch:8},{wch:8},{wch:6});
+    ws['!cols']=wch;
+    XLSX.utils.book_append_sheet(wb,ws,'Grade '+g);
+  }
+  const fname=`${schoolSlug()}_ZONAL_BUNDLE_${state.examName||'Exam'}_T${state.examTerm||''}_${state.examYear||''}.xlsx`;
+  XLSX.writeFile(wb,fname);
+  toast('✅ Zonal bundle exported ('+totalLearners+' learners across 9 grades)');
+}
+
 function downloadReportPDF(learnerIndex){
   if(!isGradePaid(currentGrade)){openMpesa();return}
   const cards=document.querySelectorAll('.report-card');
@@ -991,27 +1072,3 @@ if(!window.__ALAMAFLUX_BACKEND){
     showAuth('login');
   }
 }
-
-// ========== RETRY HELPER (Render free-tier cold-start) ==========
-// The server may take ~30s to wake from sleep on first request.
-// This wrapper auto-retries failed fetch calls up to 3 times with a 5s delay,
-// so the user doesn't see "Failed to fetch" during server wake-up.
-(function(){
-  const origFetch=window.fetch;
-  window.fetch=function(input,init){
-    var args=[].slice.call(arguments);
-    var retries=3;
-    var delay=5000;
-    function attempt(){
-      return origFetch.apply(window,args).catch(function(err){
-        if(err.name==='TypeError'&&err.message.indexOf('Failed to fetch')===0&&retries>0){
-          retries--;
-          console.log('[retry] Server waking up, retrying in '+delay+'ms ('+retries+' left)...');
-          return new Promise(function(r){setTimeout(r,delay)}).then(attempt);
-        }
-        throw err;
-      });
-    }
-    return attempt();
-  };
-})();
